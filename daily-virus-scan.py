@@ -30,10 +30,6 @@ def start_logging():
     logger.setLevel(logging.WARN) # setting it to the warn level
     return logger #returning the logger so we can pass it to other functions.
 
-# a function to update all virus defintions
-def update_virus_definitions(logger):
-    subprocess.run(["freshclam"])
-
 # a function to do a daily virus scan on 
 def daily_virus_scan(logger):
     # Adding some variables for the function to work
@@ -71,7 +67,6 @@ def virus_infection_notify_me(logger, virus): # inputs the virus count from belo
         return
 if __name__ == "__main__":
     logger = start_logging
-    update_virus_definitions(logger)
     virus = daily_virus_scan(logger)
     if virus > 0:
         virus_infection_notify_me(logger, virus)
