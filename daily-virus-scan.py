@@ -12,6 +12,7 @@ __date__ = """Feburary 14th, 2021"""
 # importing built-in python modules
 import base64
 import json
+import logging
 import os
 import subprocess
 import sys
@@ -19,12 +20,22 @@ import sys
 # importing 3rd party python modules
 import requests
 
+# a function to start the logging process
+def start_logging():
+    # basic logging config - note where the log is stored, the time the event occured and the message.
+    logging.basicConfig(filename="/var/log/daily-virus-scan.log", 
+        format="%(asctime)s %(messages)s", 
+        filemode="w")
+    logger = logging.getLogger() #starting the logging
+    logger.setLevel(logging.WARN) # setting it to the warn level
+    return logger #returning the logger so we can pass it to other functions.
+
 # a function to update all virus defintions
-def update_virus_definitions():
+def update_virus_definitions(logger):
     subprocess.run(["freshclam"])
 
 # a function to do a daily virus scan on 
-def daily_virus_scan():
+def daily_virus_scan(logger):
     # Adding some variables for the function to work
     output = subprocess.check_output(["clamscan","-r","-i", "--stdout","/home/reuben/"])
     results = output.decode(encoding="utf-8") # subprocess check_output returns in byte format need to decode to string
@@ -36,7 +47,7 @@ def daily_virus_scan():
         sys.exit()
 
 # a function that will send a notification to my phone via pushbullet api.
-def virus_infection_notify_me(virus): # inputs the virus count from below.
+def virus_infection_notify_me(logger, virus): # inputs the virus count from below.
     # Adding some variables for the function to work.
     """calling a OS environment variable that I've stored locally, ideally
     I would like to find a better or more secure way to handle this 
@@ -52,16 +63,18 @@ def virus_infection_notify_me(virus): # inputs the virus count from below.
     immediately!""".format(hostname, script_name) # body of the message in the Pushbullet API Post.
     data_send = {"type": "note", "title": title, "body": message} # What gets sent to Pushbullet API
     resp = requests.post('https://api.pushbullet.com/v2/pushes', data=json.dumps(data_send),
-    headers={'Authorization': 'Bearer ' + api_decode, 'Content-Type': 'application/json'})    
-    if resp.status_code != 200:
+    headers={'Authorization': 'Bearer ' + api_decode, 'Content-Type': 'application/json'})
+    status_code = resp.status_code   
+    if status_code != 200:
         raise Exception("Something went wrong")
     else:
         return
 if __name__ == "__main__":
-    #update_virus_definitions()
-    virus = daily_virus_scan()
+    logger = start_logging
+    update_virus_definitions(logger)
+    virus = daily_virus_scan(logger)
     if virus > 0:
-        virus_infection_notify_me(virus)
+        virus_infection_notify_me(logger, virus)
     else:
         sys.exit()
 
