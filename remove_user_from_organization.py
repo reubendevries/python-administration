@@ -1,7 +1,7 @@
 #!/bin/bash/env python3
 """ 
-remove_user_from_organization.py3
-A script to remove a user from various tools that Groundtruth leverages 
+remove_user_from_organization
+A script to remove a user from various tools
 """
 
 __author___ = "Reuben deVries"
@@ -9,99 +9,166 @@ __version__ = "0.1"
 
 # Importing python built-in libraries
 
-import os
 import argparse
 import json
-import requests
 import base64
-import sys
 
 # Importing python 3rd party libraries
 
 import boto3
-import botocore
+import botocore.exceptions
+import requests
 
 class bcolors:
     OKGREEN = '\033[92m'
     WARNING = '\033[93m'
 
-def remove_iam_user(awsuser):
-    
+def remove_iam_user(email):
     """ 
     Function used to remove IAM Users throughly, will remove the ability to login
-    detach any policies directly attached to their IAM account. Remove the IAM user
-    from any existing groups. Remove any Access Keys, Remove any public SSH keys so they 
-    can no longer commit to repositories in Code Commit, disables MFA and finally deletes
+    detach any policies directly attached to their IAM account, removes the IAM user
+    from any existing groups, removes any Access Keys, removes any public SSH keys, disables MFA and finally deletes
     the user.
     """
+    iam = boto3.client('iam')
 
-    iam_client = boto3.client('iam')
-    iam = boto3.resource('iam')
-    user = iam.User(awsuser)
     try:
-        user.load()
-        print(bcolors.OKGREEN + f"Removing AWS IAM User: {user}")
+        get_user = iam.get_user(
+            UserName = email
+        )
+        user = get_user["User"]["UserName"]
+        print(bcolors.OKGREEN + "Removing AWS IAM User: {}".format(user))
     except botocore.exceptions.ClientError as e:
-        if e.response['Error']['Code'] == 'NoSuchEntity':
-            print(bcolors.WARNING + f"{user} does not exist in our AWS Account")
+        if e.response['Error']['Code'] == "NoSuchEntity":
+            print(bcolors.WARNING + "{} does not exist in our AWS Account".format(user))
             return
         else:
             raise e
     try:
-        print(bcolors.OKGREEN + f"Removing the LoginProfile for AWS IAM user: {user}")
-        login_profile = iam.LoginProfile(user.name)
-        login_profile.load()
-        login_profile.delete()
+        print(bcolors.OKGREEN + "Removing the LoginProfile for AWS IAM user: {}".format(user))
+        iam.delete_login_profile(
+            UserName=user
+        )
     except botocore.exceptions.ClientError as e:
         if e.response['Error']['Code'] == 'NoSuchEntity':
-           print(bcolors.WARNING + f"{user} does not have access to the AWS Console")
+           print(bcolors.WARNING + "{} does not have access to the AWS Console".format(user))
         else:
            raise e
-    print(bcolors.OKGREEN + f"Removing all policies directly attached to {user}")
-    for policy in user.attached_policies.all():
-        policy.detach_user(UserName=user.name)
-
-    print(bcolors.OKGREEN + f"Removing {user} from all IAM Groups")
-    for group in user.groups.all():
-        group.remove_user(UserName=user.name)
-    
-    print(bcolors.OKGREEN + f"Removing any access keys attached to {user}")
-    for access_key in user.access_keys.all():
-        access_key.delete()
-
-    print(bcolors.OKGREEN + f"Removing any public SSH Keys attached to {user} IAM account")
-    resp = iam_client.list_ssh_public_keys(UserName=user.name)
-    for key_id in [i.get("SSHPublicKeyId") for i in resp.get("SSHPublicKeys", [])]:
-        iam_client.delete_ssh_public_key(
-        UserName=user.name,
-        SSHPublicKeyId=key_id
+    try:
+        print(bcolors.OKGREEN + "Removing all policies directly attached to {}".format(user))
+        attached_policies = iam.list_attached_user_policies(
+            UserName=user
+        )
+        for policy_arn in attached_policies["AttachedPolicies"]:
+                arn = policy_arn["PolicyArn"]
+                iam.detach_user_policy(
+                    UserName=user,
+                    PolicyArn=arn
+                )
+                print(bcolors.OKGREEN + "dettaching {} from {}'s profile".format(arn, user))
+    except botocore.exceptions.ClientError as e:
+        if e.response["Error"]["Code"] == "NoSuchEntity":
+            print(bcolors.WARNING + "No Policies attached to {}'s profile".format(user))
+        elif e.response["Error"]["Code"] == "InvalidInputException":
+            print(bcolors.WARNING + "an invalid or out-of-range value was supplied for an input parameter")
+        elif e.response["Error"]["Code"] == "LimitExceededException":
+            print(bcolors.WARNING + "The request was rejected because it attempted to create resources beyond the current AWS account limits.")
+        else:
+            raise e
+    try:
+        print(bcolors.OKGREEN + "Removing {} from all IAM Groups".format(user))
+        list_groups_for_user = iam.list_groups_for_user(
+            UserName=user
         )
 
-    for device in user.mfa_devices.all():
-        print(bcolors.OKGREEN + f"Remove any MFA devices attached to {user}")
-        device.disassociate()
-    
-    try:
-        user.delete()
-        print(bcolors.OKGREEN + f"IAM User: {user} was sucessfully removed.")
+        for groups in list_groups_for_user["Groups"]:
+            group_name = (groups["GroupName"])
+            iam.remove_user_from_group(
+                UserName=user,
+                GroupName=group_name
+            )
     except botocore.exceptions.ClientError as e:
-        raise SystemExit(bcolors.WARNING + f"unable to delete IAM user: {user}\nCause: {e.response['Error']['Code']}")
+        if e.response["Error"]["Code"] == "NoSuchEntity":
+            print(bcolors.WARNING + "No Groups attached to {}'s profile".format(user))
+        elif e.response["Error"]["Code"] == "LimitExceededException":
+            print(bcolors.WARNING + "The request was rejected because it attempted to create resources beyond the current AWS account limits.")
+        else:
+            raise e
+    try:    
+        print(bcolors.OKGREEN + "Removing any access keys attached to {}".format(user))
+        list_access_keys = iam.list_access_keys(
+            UserName=email
+        )
+        for key in list_access_keys["AccessKeyMetadata"]:
+            access_key = (key["AccessKeyId"])
+            iam.delete_access_key(
+                UserName=email,
+                AccessKeyId=access_key
+            )
+            print(bcolors.OKGREEN + "deleting {} from {}'s profile".format(access_key,email))
+    except botocore.exceptions.ClientError as e:
+        if e.response["Error"]["Code"] == "NoSuchEntity":
+            print(bcolors.WARNING + "No Access Keys attached to {}'s profile".format(user))
+        elif e.response["Error"]["Code"] == "LimitExceededException":
+            print(bcolors.WARNING + "The request was rejected because it attempted to create resources beyond the current AWS account limits.")
+        else:
+            raise e
+    try:
+        print(bcolors.OKGREEN + "Removing any public SSH Keys attached to {} IAM account".format(email))
+        list_ssh_public_keys = iam.list_ssh_public_keys(
+            UserName=user
+        )
+        for public_key in list_ssh_public_keys["SSHPublicKeys"]:
+            public_key_id = public_key["SSHPublicKeyId"]
+            iam.delete_ssh_public_key(
+                UserName=user,
+                SSHPublicKeyId=public_key_id
+            )
+    except botocore.exceptions.ClientError as e:
+        if e.response["Error"]["Code"] == "NoSuchEntity":
+            print(bcolors.WARNING + "No Public SSH Keys attached to {}'s profile".format(user))
+        else:
+            raise e
+    try:
+        list_mfa_devices = iam.list_mfa_devices(
+            UserName=user
+        )
+        for mfa_device in list_mfa_devices["MFADevices"]:
+            serial_number = mfa_device["SerialNumber"]
+            iam.deactivate_mfa_device(
+                UserName=user,
+                SerialNumber=serial_number
+            )
+
+        iam.delete_user(
+            UserName=user
+        )
+        print(bcolors.OKGREEN + "IAM User: {} was sucessfully removed.".format(user))
+    except botocore.exceptions.ClientError as e:
+        if e.response["Error"]["Code"] == "NoSuchEntity":
+            print(bcolors.WARNING + "No MFA devices attached to {}'s profile".format(user)) 
+        elif e.response["Error"]["Code"] == "LimitExceededException":
+            print(bcolors.WARNING + "The request was rejected because it attempted to create resources beyond the current AWS account limits.")
+        elif e.response["Error"]["Code"] == "EntityTemporarilyUnmodifiableException":
+            print(bcolors.WARNING + "The request was rejected because it referenced an entity that is temporarily unmodifiable, such as a user name that was deleted and then recreated.")
+        else:
+            raise SystemExit(bcolors.WARNING + "unable to delete IAM user: {}\nCause: {e.response['Error']['Code']}".format(user))
         
-def get_secret():
+def do_api_secret():
     
     """ 
-    Function used to retrieve the VictorOps-API secret api key
+    Function used to retrieve the Digital Ocean API key.
     See https://docs.aws.amazon.com/secretsmanager/latest/apireference/API_GetSecretValue.html 
     """
     
-    secret_name = "VictorOps-API"
-    region_name = "us-east-1"
+    secret_name = "Digital-Ocean-API"
+    region_name = "ca-central-1"
 
     # Create a Secrets Manager client
     session = boto3.session.Session()
     client = session.client(
-        service_name = 'secretsmanager',
-        region_name = region_name
+        service_name='secretsmanager',
+        region_name=region_name
     )
 
     try:
@@ -133,48 +200,43 @@ def get_secret():
         # Decrypts secret using the associated KMS CMK.
         # Depending on whether the secret is a string or binary, one of these fields will be populated.
         if 'SecretString' in get_secret_value_response:
-            secret = get_secret_value_response['SecretString']
+            do_api_key = get_secret_value_response['SecretString']
         else:
             decoded_binary_secret = base64.b64decode(get_secret_value_response['SecretBinary'])
+            return decoded_binary_secret
+    return json.loads(do_api_key) #This returns a dictionary with the API ID & Key.
 
-    return json.loads(secret) #This returns a dictionary with the API ID & Key.
+def remove_key_from_digital_ocean(do_api_key, email):
+    secret_value = do_api_key['Digital_Ocean_API']
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": "Bearer {}".format(secret_value)
+    }
+    api = "https://api.digitalocean.com"
+    list_all_keys = "/v2/account/keys"
+    url = api + list_all_keys
+    all_keys = requests.get(url, headers=headers)
+    response = json.loads(all_keys.text)
+    for keys in response["ssh_keys"]:
+        name = keys["name"]
+        if name == email:
+            fingerprint = keys["fingerprint"]
+            destroy_key = "/v2/account/keys/{}".format(fingerprint)
+            url = api + destroy_key
+            requests.delete(url, headers=headers)
+            print(bcolors.OKGREEN + "{}'s Public SSH Key was sucessfully deleted from Digital Ocean.".format(email))
+        else:
+            print(bcolors.WARNING + "{}'s Public SSH Key wasn't found in Digital Ocean.".format(email))
 
-def remove_user_from_victor_ops(vouser,volead):
-    
-    """ 
-    Function used to remove the victor ops user from the rotation and replace their rotation 
-    with the team lead or someone else 
-    """
-    
-    vo_user = args.vouser
-    vo_lead = args.volead
-    url = f"https://api.victorops.com/api-public/v1/user/{vo_user}/"
-    headers = {'Content-Type': 'application/json', 'Accept':'text/plain'}
-    payload = {f"replacement":"{vo_lead}"}
-#       Appending additional headers to the existing dictionary containing
-#       the API secrets 'X-VO-Api-Id' & 'X-VO-Api-Key'.
-    try:
-        headers.update(get_secret())
-        response = requests.delete(url, headers=headers, params=payload)
-        print(bcolors.OKGREEN + f"user {vo_user} has been deleted from the Victor Ops System","green")
-    except botocore.exceptions.ClientError as e:
-        raise e
-
-def get_token():
-    
-    """ 
-    Function used to retrieve the GitHub secret api key
-    See https://docs.aws.amazon.com/secretsmanager/latest/apireference/API_GetSecretValue.html 
-    """
-
-    secret_name = "GitHub-API"
-    region_name = "us-east-1"
+def gl_api_secret():
+    secret_name = "Gitlab-DevNet-API"
+    region_name = "ca-central-1"
 
     # Create a Secrets Manager client
     session = boto3.session.Session()
     client = session.client(
-        service_name = 'secretsmanager',
-        region_name = region_name
+        service_name="secretsmanager",
+        region_name=region_name
     )
 
     # In this sample we only handle the specific exceptions for the 'GetSecretValue' API.
@@ -183,71 +245,66 @@ def get_token():
 
     try:
         get_secret_value_response = client.get_secret_value(
-            SecretId = secret_name
+            SecretId=secret_name
         )
     except botocore.exceptions.ClientError as e:
-        if e.response['Error']['Code'] == 'DecryptionFailureException':
+        if e.response["Error"]["Code"] == "DecryptionFailureException":
             # Secrets Manager can't decrypt the protected secret text using the provided KMS key.
             # Deal with the exception here, and/or rethrow at your discretion.
             raise e
-        elif e.response['Error']['Code'] == 'InternalServiceErrorException':
+        elif e.response["Error"]["Code"] == "InternalServiceErrorException":
             # An error occurred on the server side.
             # Deal with the exception here, and/or rethrow at your discretion.
             raise e
-        elif e.response['Error']['Code'] == 'InvalidParameterException':
+        elif e.response["Error"]["Code"] == "InvalidParameterException":
             # You provided an invalid value for a parameter.
             # Deal with the exception here, and/or rethrow at your discretion.
             raise e
-        elif e.response['Error']['Code'] == 'InvalidRequestException':
+        elif e.response["Error"]["Code"] == "InvalidRequestException":
             # You provided a parameter value that is not valid for the current state of the resource.
             # Deal with the exception here, and/or rethrow at your discretion.
             raise e
-        elif e.response['Error']['Code'] == 'ResourceNotFoundException':
+        elif e.response["Error"]["Code"] == "ResourceNotFoundException":
             # We can't find the resource that you asked for.
             # Deal with the exception here, and/or rethrow at your discretion.
             raise e
     else:
         # Decrypts secret using the associated KMS CMK.
         # Depending on whether the secret is a string or binary, one of these fields will be populated.
-        if 'SecretString' in get_secret_value_response:
-            secret = get_secret_value_response['SecretString']
+        if "SecretString" in get_secret_value_response:
+            gl_api_key = get_secret_value_response["SecretString"]
         else:
-            decoded_binary_secret = base64.b64decode(get_secret_value_response['SecretBinary'])
-    return json.loads(secret)
+            decoded_binary_secret = base64.b64decode(get_secret_value_response["SecretBinary"])
+            return decoded_binary_secret
+    return json.loads(gl_api_key)
 
-def remove_user_from_github(ghuser):
+def remove_user_from_gitlab(gl_api_key, email):
+    secret_value = gl_api_key["GitLab_DevNet_API"]
+    headers = {
+        "Authorization": "Bearer {}".format(secret_value)
+    }
+    api = "https://gitlab.coppertreeanalytics.com/api/v4/"
+    list_all_users = "users"
+    url = api + list_all_users
+    all_users = requests.get(url, headers=headers)
+    response = json.loads(all_users.text)
+    for users in response:
+        if users["email"] == email:
+            user_id = users["id"]
+            url = api + list_all_users + ":" + user_id
+            requests.delete(url, headers=headers)
+            print(bcolors.OKGREEN + "{} was sucessfully deleted from Gitlab.".format(email))
+        else:
+            print(bcolors.WARNING + "{} wasn't found inside of Gitlab, can't delete from system.".format(email))
     
-    """ 
-    Function used to remove the user from the @xadrnd GitHub Organization 
-    """
-
-    gh_user = args.ghuser
-    url = f"https://api.github.com/orgs/xadrnd/memberships/{gh_user}"
-    access_token = get_token()
-    print(url, access_token)
-#       Appending additional headers to the existing dictionary containing
-#       the API secrets 'X-VO-Api-Id' & 'X-VO-Api-Key'.
-    try:
-       response = requests.delete(url, headers=access_token)
-
-    except botocore.exceptions.ClientError as e:
-       raise e
-
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Passing some data that you want "
                                  "to use for variable into this script")
-    parser.add_argument("-a", "--awsuser",
-                    help="Add the username of the user you wish to remove from AWS IAM.")
-    parser.add_argument("-v","--vouser",
-                        help="the username of the user you wish to remove from VictorOps.")
-    parser.add_argument("-l","--volead",
-                        help="the username of the team leader who will replace the user's oncall.")
-    parser.add_argument("-g","--ghuser",
-                        help="the username of the user you wish to remove from your github organization.")
+    parser.add_argument("-e", "--email",
+                    help="pass through the email address of the user you wish to deactivate")
     args = parser.parse_args()
-
-    remove_iam_user(args.awsuser)
-    get_secret()
-    remove_user_from_victor_ops(args.vouser,args.volead)
-    get_token()
-    remove_user_from_github(args.ghuser)
+    remove_iam_user(args.email)
+    do_api_key = do_api_secret()
+    remove_key_from_digital_ocean(do_api_key, args.email)
+    gl_api_key = gl_api_secret()
+    remove_user_from_gitlab(gl_api_key, args.email)
