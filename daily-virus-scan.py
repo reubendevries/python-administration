@@ -46,7 +46,7 @@ def notify_me(logger, results): # inputs the virus count from below.
     
     logger()
     
-    api = "o.RPK8AR0ivlTfbQgnNP8YpUNmA7Slfmgs"
+    api = ""
 
     hostname = uname()[1] # Lets me know the hostname of the computer where the virus infection was found.
     
